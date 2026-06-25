@@ -1,0 +1,109 @@
+# =============================================================================
+# hermes-agent skills — OFFLINE third-party Python dependencies
+# =============================================================================
+# Scope: packages actually imported by bundled skill scripts (skills/,
+# optional-skills/, userskills/), plus DOCX/PPTX libs the SKILL.md docs require.
+#
+# EXCLUDED:
+#   - Python stdlib (sys, os, json, urllib, pathlib, argparse, csv, re,
+#     datetime, subprocess, sqlite3, ssl, socket, zipfile, hashlib, ...)
+#   - Local sibling modules (_common, check_deps, _http, _normalize, _watermark,
+#     _hermes_home, hermes_constants, validators, palettes, pixel_art, ...)
+#   - ML training/serving docs in SKILL.md (torch, vllm, transformers, unsloth,
+#     axolotl, deepspeed, diffusers, ...) — these are model-build instructions,
+#     not runtime deps of the shipped scripts. See section at bottom.
+# =============================================================================
+
+
+# ----------------------------------------------------------------------------
+# CORE (lightweight, pure-Python or small wheels) — pull these for offline use
+# ----------------------------------------------------------------------------
+
+# HTTP client used by several skills (comfyui, meme-generation, canvas)
+requests>=2.28.0
+
+# Image generation / pixel-art / meme-generation
+Pillow>=10.0.0
+
+# XML hardening — powerpoint pack/clean pipeline
+defusedxml>=0.7.1
+
+# YAML config parsing — telephony, openclaw-migration, security/godmode
+PyYAML>=6.0
+
+# WebSocket client — comfyui run_workflow / ws_monitor
+websocket-client>=1.6.0
+
+# OpenAI SDK — darwinian-evolver, security/godmode scripts
+openai>=1.0.0
+
+# Templating — darwinian-evolver parrot_openrouter
+Jinja2>=3.1.0
+
+# YouTube transcripts — media/youtube-content, memento-flashcards quiz
+youtube-transcript-api>=0.6.0
+
+
+# ----------------------------------------------------------------------------
+# DOCUMENTS (ocr-and-documents, powerpoint, finance) — PDF / Office files
+# ----------------------------------------------------------------------------
+
+# PDF text/markdown extraction (lightweight, ~25MB)
+pymupdf>=1.24.0
+pymupdf4llm>=0.0.17
+
+# PDF -> Word output (SKILL.md guidance, not script-imported)
+python-docx>=1.1.0
+
+# PowerPoint authoring (SKILL.md guidance)
+python-pptx>=0.6.21
+
+# Excel — finance/dcf-model validate_dcf, finance/excel-author
+openpyxl>=3.0.0
+
+
+# ----------------------------------------------------------------------------
+# GOOGLE WORKSPACE (skills/productivity/google-workspace)
+# ----------------------------------------------------------------------------
+google-api-python-client>=2.0.0
+google-auth>=2.0.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.1.0
+
+
+# ----------------------------------------------------------------------------
+# MCP servers (optional-skills/mcp/fastmcp templates)
+# ----------------------------------------------------------------------------
+fastmcp>=2.0.0
+httpx>=0.27.0
+
+
+# ----------------------------------------------------------------------------
+# MISC / single-skill
+# ----------------------------------------------------------------------------
+
+# Encrypted upload — excalidraw skill
+cryptography>=42.0.0
+
+
+# =============================================================================
+# HEAVY / OPTIONAL — large downloads or GPU stacks. Install only per-skill,
+# NOT part of a minimal offline bundle.
+# =============================================================================
+
+# --- ocr-and-documents (marker path): OCR / equations / complex layout ---
+# Pulls in PyTorch + downloads ~2.5GB models to ~/.cache/huggingface on 1st run.
+# marker-pdf>=1.0.0
+
+# --- comfyui hardware_check: only imports torch to probe GPU (optional) ---
+# torch
+
+# --- mlops/training/trl-fine-tuning (TEMPLATE only, user runs on GPU box) ---
+# torch
+# transformers
+# trl
+# peft
+# datasets
+
+# --- research/darwinian-evolver: external package, installed via `uv`/git ---
+# darwinian-evolver
