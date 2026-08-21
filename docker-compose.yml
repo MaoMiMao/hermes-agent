@@ -11,10 +11,9 @@
 # user via `s6-setuidgid`.
 #
 # Security notes:
-#   - The dashboard service binds to 127.0.0.1 by default. It stores API
-#     keys; exposing it on LAN without auth is unsafe. If you want remote
-#     access, use an SSH tunnel or put it behind a reverse proxy that
-#     adds authentication — do NOT pass --insecure --host 0.0.0.0.
+#   - Dashboard, gateway, API server, and knowledge-base run in one supervised
+#     container. Only Dashboard (6060), previews (8651), and the loopback-only
+#     knowledge-base UI (4178) are published; the API server stays internal.
 #   - If you override entrypoint, keep `/init` as the first command in
 #     the chain (or let docker use the image's default ENTRYPOINT,
 #     which is `["/init", "/opt/hermes/docker/main-wrapper.sh"]`).
@@ -22,26 +21,79 @@
 #     (chown, profile reconcile, dashboard toggle) and sets up the
 #     supervision tree before any service starts. Bypassing it skips
 #     all of that setup and the gateway will not work correctly.
-#   - The gateway's API server is off unless you uncomment API_SERVER_KEY
-#     and API_SERVER_HOST. See docs/user-guide/api-server.md before doing
-#     this on an internet-facing host.
+#   - The API server is enabled for the knowledge-base service inside the
+#     shared container network. API_SERVER_KEY is mandatory and stays on the
+#     server side; port 8642 is not published to the host.
 #
 services:
   gateway:
-    build: .
-    image: hermes-agent
-    container_name: hermes
+    build:
+      context: .
+      dockerfile: Dockerfile.knowledge-base
+      args:
+        HERMES_BASE_IMAGE: ${HERMES_BASE_IMAGE:-ds-hermes-agent:20260818}
+    image: ds-hermes-workspace:20260820
+    container_name: ds-hermes
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "${PORT:-6060}:${PORT:-6060}"
+      - "${PREVIEW_FRONTEND_PORT:-8651}:8651"
+      - "127.0.0.1:${KNOWLEDGE_BASE_PORT:-4178}:4178"
     volumes:
-      - ~/.hermes:/opt/data
+      - /opt/ds-hermes/data/hermes:/opt/data
+      - /opt/ds-hermes/data/knowledge_repository:/opt/knowledge_repository
+      - ${KNOWLEDGE_BASE_APP_DIR:-/opt/app/llm-wiki-explorer}:/opt/knowledge-base:ro
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
-      # To expose the OpenAI-compatible API server beyond localhost,
-      # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
-      # - API_SERVER_HOST=0.0.0.0
-      # - API_SERVER_KEY=${API_SERVER_KEY}
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
+      - PYTHONUTF8=1
+      - PYTHONIOENCODING=UTF-8
+      - HERMES_WEB_UI_MANAGED_GATEWAY=1
+      - HERMES_WEB_UI_AUTH_JWT_EXPIRES_IN=${HERMES_WEB_UI_AUTH_JWT_EXPIRES_IN:-30d}
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_HOST=0.0.0.0
+      - HERMES_DASHBOARD_PORT=${PORT:-6060}
+      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-admin}
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:?请在 Compose 环境中设置 Dashboard 密码}
+      - HERMES_KNOWLEDGE_BASE=1
+      - KNOWLEDGE_BASE_APP_DIR=/opt/knowledge-base
+      - KNOWLEDGE_BASE_HOST=0.0.0.0
+      - KNOWLEDGE_BASE_PORT=4178
+      - NODE_ENV=production
+      - HERMES_API_URL=http://127.0.0.1:8642
+      - HERMES_UPLOAD_DIR=/opt/knowledge_repository/.knowledge-base-uploads
+      - PATH=/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      - HERMES_ALLOW_ROOT_GATEWAY=1
+      - API_SERVER_ENABLED=true
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_KEY=${API_SERVER_KEY:?请在 Compose 环境中设置至少 16 位的 API_SERVER_KEY}
+      - HERMES_DISABLE_LAZY_INSTALLS=1
+      - HERMES_SKIP_NODE_BOOTSTRAP=1
+      - UV_OFFLINE=1
+      - PIP_NO_INDEX=1
+      - PIP_DISABLE_PIP_VERSION_CHECK=1
+      - npm_config_offline=true
+      - npm_config_audit=false
+      - npm_config_fund=false
+      - npm_config_update_notifier=false
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - HF_DATASETS_OFFLINE=1
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - WANDB_DISABLED=true
+      - WANDB_MODE=offline
+      - DO_NOT_TRACK=1
+      - AWS_EC2_METADATA_DISABLED=true
+      - NO_PROXY=localhost,127.0.0.1,::1,host.docker.internal,hermes-webui
+      - HERMES_API_TIMEOUT=180
+      - HERMES_API_CALL_STALE_TIMEOUT=120
+      - HERMES_STREAM_READ_TIMEOUT=60
+      - HERMES_STREAM_STALE_TIMEOUT=120
+      - TERMINAL_TIMEOUT=120
+      # The OpenAI-compatible API server is consumed only by the supervised
+      # knowledge-base service over container loopback. Do not publish 8642.
       # Microsoft Teams — uncomment and fill in to enable Teams gateway.
       # Register your bot at https://dev.botframework.com/ to get these values.
       # - TEAMS_CLIENT_ID=${TEAMS_CLIENT_ID}
@@ -59,18 +111,3 @@ services:
       # - GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=${GOOGLE_CHAT_SERVICE_ACCOUNT_JSON}
       # - GOOGLE_CHAT_ALLOWED_USERS=${GOOGLE_CHAT_ALLOWED_USERS}
     command: ["gateway", "run"]
-
-  dashboard:
-    image: hermes-agent
-    container_name: hermes-dashboard
-    restart: unless-stopped
-    network_mode: host
-    depends_on:
-      - gateway
-    volumes:
-      - ~/.hermes:/opt/data
-    environment:
-      - HERMES_UID=${HERMES_UID:-10000}
-      - HERMES_GID=${HERMES_GID:-10000}
-    # Localhost-only. For remote access, tunnel via `ssh -L 9119:localhost:9119`.
-    command: ["dashboard", "--host", "127.0.0.1", "--no-open"]

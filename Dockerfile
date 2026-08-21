@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # Debian 13 still ships SQLite 3.46.1, which contains the upstream WAL-reset
 # corruption bug. Build a pinned shared library for the runtime image instead
 # of relying on a distro backport that trixie does not currently provide.
@@ -56,6 +58,10 @@ FROM debian:13.4
 # published container and writable state belongs under /opt/data.
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONUTF8=1 \
+    PYTHONIOENCODING=UTF-8
 
 # Store Playwright browsers outside the volume mount so the build-time
 # install survives the /opt/data volume overlay at runtime.
@@ -70,7 +76,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
+    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg libimage-exiftool-perl gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
 # Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
@@ -265,6 +271,18 @@ RUN cd plugins/platforms/photon/sidecar && \
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
 RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+
+# MarkItDown and its OCR plugin are supplied from an offline wheelhouse. The
+# wheelhouse is a named BuildKit context so it stays outside both the source
+# tree and the final image. It must contain Python 3.13 wheels for the target
+# architecture, including the complete dependency closure.
+RUN --mount=type=bind,from=markitdown_wheels,target=/opt/markitdown-wheels,readonly \
+    uv pip install \
+        --python /opt/hermes/.venv/bin/python \
+        --no-index \
+        --find-links=/opt/markitdown-wheels \
+        "markitdown[all]==0.1.7" \
+        "markitdown-ocr==0.1.0"
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
