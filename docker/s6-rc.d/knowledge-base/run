@@ -1,0 +1,27 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+
+case "${HERMES_KNOWLEDGE_BASE:-}" in
+    1|true|TRUE|True|yes|YES|Yes) ;;
+    *) exit 0 ;;
+esac
+
+app_dir="${KNOWLEDGE_BASE_APP_DIR:-/opt/knowledge-base}"
+upload_dir="${HERMES_UPLOAD_DIR:-/opt/knowledge_repository/.knowledge-base-uploads}"
+
+if [ ! -f "$app_dir/server.mjs" ]; then
+    echo "[knowledge-base] Missing $app_dir/server.mjs; retrying." >&2
+    exit 111
+fi
+
+mkdir -p "$upload_dir"
+chown hermes:hermes "$upload_dir" 2>/dev/null || true
+
+export HOME=/opt/data
+export NODE_ENV="${NODE_ENV:-production}"
+export HOST="${KNOWLEDGE_BASE_HOST:-0.0.0.0}"
+export PORT="${KNOWLEDGE_BASE_PORT:-4178}"
+
+cd "$app_dir"
+[ "$(id -u)" = 0 ] || exec node server.mjs
+exec s6-setuidgid hermes node server.mjs

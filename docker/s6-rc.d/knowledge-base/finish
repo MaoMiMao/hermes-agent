@@ -1,0 +1,7 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+
+case "${HERMES_KNOWLEDGE_BASE:-}" in
+    1|true|TRUE|True|yes|YES|Yes) exit 0 ;;
+    *) exit 125 ;;
+esac

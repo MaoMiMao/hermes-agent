@@ -1,0 +1,6 @@
+interface:
+  display_name: "QLJQ MCP 使用技能"
+  short_description: "按已识别意图调用警情 MCP 并套用场景模板"
+  default_prompt: "主智能体已识别意图后，使用 $qljq-police-analysis 调用 qljq-analysis-mcp，完成编码解析、查询和对应模板输出。"
+policy:
+  allow_implicit_invocation: true

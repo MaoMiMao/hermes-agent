@@ -1,0 +1,18 @@
+ARG HERMES_BASE_IMAGE=ds-hermes-agent:20260818
+FROM ${HERMES_BASE_IMAGE}
+
+USER root
+
+COPY docker/s6-rc.d/knowledge-base/ /etc/s6-overlay/s6-rc.d/knowledge-base/
+COPY docker/s6-rc.d/user/contents.d/knowledge-base /etc/s6-overlay/s6-rc.d/user/contents.d/knowledge-base
+COPY docker/s6-rc.d/dashboard/run /etc/s6-overlay/s6-rc.d/dashboard/run
+COPY docker/s6-rc.d/dashboard/finish /etc/s6-overlay/s6-rc.d/dashboard/finish
+
+RUN sed -i 's/\r$//' \
+        /etc/s6-overlay/s6-rc.d/dashboard/run \
+        /etc/s6-overlay/s6-rc.d/dashboard/finish && \
+    chmod 0755 \
+        /etc/s6-overlay/s6-rc.d/dashboard/run \
+        /etc/s6-overlay/s6-rc.d/dashboard/finish \
+        /etc/s6-overlay/s6-rc.d/knowledge-base/run \
+        /etc/s6-overlay/s6-rc.d/knowledge-base/finish

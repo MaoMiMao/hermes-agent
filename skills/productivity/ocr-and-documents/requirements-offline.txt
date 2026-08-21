@@ -1,0 +1,17 @@
+# ocr-and-documents skill — offline third-party dependencies
+# (stdlib excluded: sys, json, os, shutil, pathlib)
+
+# --- Lightweight path: text-based PDF extraction + markdown ---
+# extract_pymupdf.py
+pymupdf>=1.24.0
+pymupdf4llm>=0.0.17
+
+# --- PDF -> Word (.docx) ---
+# Write the extracted text/structure into a Word document.
+# (Not imported by the helper scripts; used per SKILL.md guidance for DOCX output.)
+python-docx>=1.1.0
+
+# --- Heavy path (OPTIONAL): scanned PDF / OCR / equations / complex layout ---
+# extract_marker.py — pulls in PyTorch + ~2.5GB of models on first run.
+# Omit this for a minimal offline PDF->Word bundle; pymupdf covers text PDFs.
+# marker-pdf>=1.0.0
