@@ -314,6 +314,63 @@ def build_model_options_payload(
     )
 
 
+def build_local_model_options_payload(ctx: ConfigContext) -> dict:
+    """Build a model list from disk configuration only.
+
+    This path is intended for offline clients. It deliberately avoids the
+    provider inventory, models.dev, pricing, capability enrichment, and all
+    live ``/models`` probes. Only models explicitly present in ``providers`` /
+    ``custom_providers`` plus the configured current model are advertised.
+    """
+    rows: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(provider: str, model: str, label: str = "") -> None:
+        provider_id = str(provider or "custom").strip() or "custom"
+        model_id = str(model or "").strip()
+        if not model_id:
+            return
+        key = (provider_id.lower(), model_id.lower())
+        if key in seen:
+            return
+        seen.add(key)
+        row = next((item for item in rows if item["slug"].lower() == provider_id.lower()), None)
+        if row is None:
+            row = {
+                "slug": provider_id,
+                "name": label or provider_id,
+                "models": [],
+                "total_models": 0,
+                "is_user_defined": True,
+                "authenticated": True,
+                "source": "local-config",
+            }
+            rows.append(row)
+        row["models"].append(model_id)
+        row["total_models"] = len(row["models"])
+
+    for entry in ctx.custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        provider = entry.get("provider_key") or entry.get("name") or "custom"
+        models = entry.get("models")
+        if isinstance(models, dict):
+            model_ids = list(models.keys())
+        elif isinstance(models, (list, tuple)):
+            model_ids = models
+        else:
+            model_ids = [entry.get("model", "")]
+        for model in model_ids:
+            if str(model).startswith("__"):
+                continue
+            add(str(provider), model, str(entry.get("name") or provider))
+
+    add(ctx.current_provider or "custom", ctx.current_model, ctx.current_provider or "当前模型")
+    for row in rows:
+        row["is_current"] = row["slug"].lower() == str(ctx.current_provider or "").lower()
+    return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider, "offline": True}
+
+
 # ─── Public: auxiliary-task pickers ─────────────────────────────────────
 
 

@@ -10,6 +10,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -338,6 +339,116 @@ class TestRunEvents:
                 # Should contain run.completed
                 assert "run.completed" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_events_stream_reasoning_deltas_before_calibration_and_completion(
+        self, adapter
+    ):
+        app = _create_runs_app(adapter)
+
+        def _create_agent(**kwargs):
+            mock_agent = MagicMock()
+            mock_agent.session_prompt_tokens = 2
+            mock_agent.session_completion_tokens = 3
+            mock_agent.session_total_tokens = 5
+
+            def _run_conversation(*_args, **_kwargs):
+                kwargs["thinking_callback"]("(thinking face) synthesizing...")
+                kwargs["status_callback"]("lifecycle", "Preparing context")
+                kwargs["reasoning_callback"]("inspect evidence ")
+                kwargs["reasoning_callback"]("")
+                kwargs["reasoning_callback"]("then answer")
+                kwargs["tool_start_callback"]("call-1", "read_file", {"path": "a.md"})
+                kwargs["tool_complete_callback"]("call-1", "read_file", {"path": "a.md"}, "A")
+                kwargs["tool_start_callback"]("call-2", "read_file", {"path": "b.md"})
+                kwargs["tool_complete_callback"]("call-2", "read_file", {"path": "b.md"}, "B")
+                kwargs["stream_delta_callback"]("Done.")
+                kwargs["tool_progress_callback"](
+                    "reasoning.available",
+                    "_thinking",
+                    "inspect evidence then answer",
+                    None,
+                )
+                return {"final_response": "Done."}
+
+            mock_agent.run_conversation.side_effect = _run_conversation
+            return mock_agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=_create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+        events = [
+            json.loads(line[len("data: "):])
+            for line in body.splitlines()
+            if line.startswith("data: ")
+        ]
+        names = [event["event"] for event in events]
+        thinking = [event for event in events if event["event"] == "thinking.delta"]
+        statuses = [event for event in events if event["event"] == "status.update"]
+        reasoning = [event for event in events if event["event"] == "reasoning.delta"]
+        tools = [event for event in events if event["event"].startswith("tool.")]
+
+        assert [event["text"] for event in thinking] == ["(thinking face) synthesizing..."]
+        assert [(event["kind"], event["text"]) for event in statuses] == [
+            ("lifecycle", "Preparing context")
+        ]
+        assert [event["delta"] for event in reasoning] == [
+            "inspect evidence ",
+            "then answer",
+        ]
+        assert all(event["run_id"] == run_id for event in reasoning)
+        assert [(event["event"], event["tool_call_id"]) for event in tools] == [
+            ("tool.started", "call-1"),
+            ("tool.completed", "call-1"),
+            ("tool.started", "call-2"),
+            ("tool.completed", "call-2"),
+        ]
+        assert names.index("thinking.delta") < names.index("reasoning.delta")
+        assert names.index("status.update") < names.index("reasoning.delta")
+        assert "reasoning.available" not in names
+        assert names.index("reasoning.delta") < names.index("tool.started")
+        assert names.index("tool.completed") < names.index("message.delta")
+        assert names.index("message.delta") < names.index("run.completed")
+
+    @pytest.mark.asyncio
+    async def test_reasoning_callback_drops_deltas_after_transport_closes(self, adapter):
+        app = _create_runs_app(adapter)
+        captured = {}
+
+        def _create_agent(**kwargs):
+            captured["reasoning_callback"] = kwargs["reasoning_callback"]
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "Done."}
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            return mock_agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=_create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                queue = adapter._run_streams[run_id]
+
+                for _ in range(40):
+                    if run_id not in adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert run_id not in adapter._active_run_tasks
+                queued_before_late_delta = queue.qsize()
+                captured["reasoning_callback"]("too late")
+                await asyncio.sleep(0)
+
+                assert queue.qsize() == queued_before_late_delta
 
 
     @pytest.mark.asyncio

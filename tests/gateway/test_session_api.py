@@ -366,6 +366,83 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     assert any(m.get("tool_calls") for m in messages)
 
 
+@pytest.mark.asyncio
+async def test_session_chat_stream_emits_reasoning_deltas_separately(adapter, session_db):
+    """Live reasoning must not be delayed until the final calibration event."""
+    import json as _json
+
+    session_id = session_db.create_session("reasoning-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["thinking_callback"]("(thinking face) analyzing...")
+        kwargs["status_callback"]("lifecycle", "Preparing context")
+        kwargs["reasoning_callback"]("check the source ")
+        kwargs["reasoning_callback"]("")
+        kwargs["reasoning_callback"]("before answering")
+        kwargs["stream_delta_callback"]("The answer.")
+        kwargs["tool_progress_callback"](
+            "reasoning.available",
+            "_thinking",
+            "check the source before answering",
+            None,
+        )
+        return (
+            {"final_response": "The answer.", "session_id": session_id},
+            {"total_tokens": 4},
+        )
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "reason about this"},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    events = []
+    for block in body.split("\n\n"):
+        event_name = None
+        payload = None
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event_name = line[len("event: "):]
+            elif line.startswith("data: "):
+                payload = _json.loads(line[len("data: "):])
+        if event_name and payload is not None:
+            events.append((event_name, payload))
+
+    names = [name for name, _ in events]
+    thinking = [payload for name, payload in events if name == "thinking.delta"]
+    statuses = [payload for name, payload in events if name == "status.update"]
+    reasoning = [payload for name, payload in events if name == "reasoning.delta"]
+    assert [event["text"] for event in thinking] == ["(thinking face) analyzing..."]
+    assert [(event["kind"], event["text"]) for event in statuses] == [
+        ("lifecycle", "Preparing context")
+    ]
+    assert statuses[0]["message_id"] == thinking[0]["message_id"]
+    assert [event["delta"] for event in reasoning] == [
+        "check the source ",
+        "before answering",
+    ]
+    assert all(event["message_id"] for event in reasoning)
+    assert len({event["message_id"] for event in reasoning}) == 1
+    assert names.index("thinking.delta") < names.index("reasoning.delta")
+    assert names.index("status.update") < names.index("reasoning.delta")
+    assert names.index("reasoning.delta") < names.index("assistant.delta")
+
+    # Preserve the existing complete reasoning snapshot as a calibration
+    # event after the incremental stream.
+    calibration = [payload for name, payload in events if name == "tool.progress"]
+    assert len(calibration) == 1
+    assert calibration[0]["message_id"] == reasoning[0]["message_id"]
+    assert calibration[0]["tool_name"] == "_thinking"
+    assert calibration[0]["delta"] == "check the source before answering"
+    assert names.index("reasoning.delta") < names.index("tool.progress")
+    assert names.index("tool.progress") < names.index("run.completed")
+
+
 # ---------------------------------------------------------------------------
 # Session-persisted model threading + provider-auth failure surfacing
 # (salvaged from PR #57947 by @FvanW and PR #59941 by @kaishi00)

@@ -2816,6 +2816,9 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
+        thinking_callback=None,
+        status_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -3129,6 +3132,9 @@ class APIServerAdapter(BasePlatformAdapter):
             "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
+            "reasoning_callback": reasoning_callback,
+            "thinking_callback": thinking_callback,
+            "status_callback": status_callback,
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
@@ -3286,12 +3292,20 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         refresh = _coerce_request_bool(request.query.get("refresh"), default=False)
+        offline = _coerce_request_bool(request.query.get("offline"), default=False)
         try:
-            from hermes_cli.inventory import build_model_options_payload, load_picker_context
+            from hermes_cli.inventory import (
+                build_local_model_options_payload,
+                build_model_options_payload,
+                load_picker_context,
+            )
 
             def _build_payload() -> Dict[str, Any]:
+                context = load_picker_context()
+                if offline:
+                    return build_local_model_options_payload(context)
                 return build_model_options_payload(
-                    load_picker_context(),
+                    context,
                     include_unconfigured=True,
                     refresh=refresh,
                 )
@@ -4823,6 +4837,20 @@ class APIServerAdapter(BasePlatformAdapter):
             if delta:
                 _enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
+        def _reasoning_delta(delta: str) -> None:
+            if delta:
+                _enqueue("reasoning.delta", {"message_id": message_id, "delta": delta})
+
+        def _thinking_update(text: str) -> None:
+            _enqueue("thinking.delta", {"message_id": message_id, "text": text or ""})
+
+        def _status_update(kind: str, text: Optional[str] = None) -> None:
+            _enqueue("status.update", {
+                "message_id": message_id,
+                "kind": kind or "status",
+                "text": text if text is not None else kind or "",
+            })
+
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
                 _enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
@@ -4845,6 +4873,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     ephemeral_system_prompt=system_prompt,
                     session_id=session_id,
                     stream_delta_callback=_delta,
+                    reasoning_callback=_reasoning_delta,
+                    thinking_callback=_thinking_update,
+                    status_callback=_status_update,
                     tool_progress_callback=_tool_progress,
                     active_run_id=run_id,
                     gateway_session_key=gateway_session_key,
@@ -7204,6 +7235,9 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
+        thinking_callback=None,
+        status_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -7279,6 +7313,9 @@ class APIServerAdapter(BasePlatformAdapter):
                         ephemeral_system_prompt=ephemeral_system_prompt,
                         session_id=session_id,
                         stream_delta_callback=stream_delta_callback,
+                        reasoning_callback=reasoning_callback,
+                        thinking_callback=thinking_callback,
+                        status_callback=status_callback,
                         tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback,
                         tool_complete_callback=tool_complete_callback,
@@ -7493,31 +7530,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
-            if event_type == "tool.started":
-                _push({
-                    "event": "tool.started",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "tool": tool_name,
-                    "preview": preview,
-                })
-            elif event_type == "tool.completed":
-                _push({
-                    "event": "tool.completed",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "tool": tool_name,
-                    "duration": round(kwargs.get("duration", 0), 3),
-                    "error": kwargs.get("is_error", False),
-                })
-            elif event_type == "reasoning.available":
-                _push({
-                    "event": "reasoning.available",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "text": preview or "",
-                })
-            elif event_type in {"subagent.start", "subagent.complete"}:
+            if event_type in {"subagent.start", "subagent.complete"}:
                 event = {
                     "event": event_type,
                     "run_id": run_id,
@@ -7561,10 +7574,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         value = redact_sensitive_text(value, force=True)
                     event[key] = value
                 _push(event)
-            # _thinking, subagent.tool, and subagent_progress are intentionally
-            # not forwarded on the /v1/runs stream: they are high-volume UI
-            # noise. Lifecycle boundaries (start/complete) still need to land
-            # so clients can observe delegate_task timeouts and failures.
+            # Tool lifecycle uses tool_start_callback/tool_complete_callback so
+            # repeated calls have stable IDs. reasoning.available is derived
+            # from assistant content, not model reasoning, and must not cross
+            # the API boundary as thought text. Real reasoning uses
+            # reasoning_callback -> reasoning.delta.
 
         return _callback
 
@@ -7666,6 +7680,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
+        transport_open = True
         created_at = time.time()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
@@ -7675,12 +7690,56 @@ class APIServerAdapter(BasePlatformAdapter):
 
         def _put_event_if_active(event: Optional[Dict]) -> None:
             """Enqueue only while this run still owns live transport state."""
-            if self._run_streams.get(run_id) is q:
+            if transport_open and self._run_streams.get(run_id) is q:
                 q.put_nowait(event)
+
+        started_tool_call_ids: set[str] = set()
+
+        def _tool_start_cb(tool_call_id: str, function_name: str, function_args: Dict[str, Any]) -> None:
+            if not tool_call_id or str(function_name or "").startswith("_"):
+                return
+            try:
+                from agent.display import build_tool_preview
+
+                label = build_tool_preview(function_name, function_args or {}) or function_name
+            except Exception:
+                label = function_name
+            started_tool_call_ids.add(tool_call_id)
+            try:
+                loop.call_soon_threadsafe(_put_event_if_active, {
+                    "event": "tool.started",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "tool_call_id": tool_call_id,
+                    "tool": function_name,
+                    "preview": label,
+                })
+            except Exception:
+                pass
+
+        def _tool_complete_cb(
+            tool_call_id: str,
+            function_name: str,
+            function_args: Dict[str, Any],
+            function_result: Any,
+        ) -> None:
+            if not tool_call_id or tool_call_id not in started_tool_call_ids:
+                return
+            started_tool_call_ids.discard(tool_call_id)
+            try:
+                loop.call_soon_threadsafe(_put_event_if_active, {
+                    "event": "tool.completed",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "tool_call_id": tool_call_id,
+                    "tool": function_name,
+                })
+            except Exception:
+                pass
 
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
-            if delta is None:
+            if not delta:
                 return
             if run_id not in self._run_streams:
                 return
@@ -7690,6 +7749,46 @@ class APIServerAdapter(BasePlatformAdapter):
                     "run_id": run_id,
                     "timestamp": time.time(),
                     "delta": delta,
+                })
+            except Exception:
+                pass
+
+        def _reasoning_cb(delta: Optional[str]) -> None:
+            if not delta or not transport_open:
+                return
+            try:
+                loop.call_soon_threadsafe(_put_event_if_active, {
+                    "event": "reasoning.delta",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "delta": delta,
+                })
+            except Exception:
+                pass
+
+        def _thinking_cb(text: Optional[str]) -> None:
+            if not transport_open:
+                return
+            try:
+                loop.call_soon_threadsafe(_put_event_if_active, {
+                    "event": "thinking.delta",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "text": text or "",
+                })
+            except Exception:
+                pass
+
+        def _status_cb(kind: str, text: Optional[str] = None) -> None:
+            if not transport_open:
+                return
+            try:
+                loop.call_soon_threadsafe(_put_event_if_active, {
+                    "event": "status.update",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "kind": kind or "status",
+                    "text": text if text is not None else kind or "",
                 })
             except Exception:
                 pass
@@ -7713,6 +7812,7 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
         async def _run_and_close():
+            nonlocal transport_open
             try:
                 self._set_run_status(run_id, "running")
                 if run_id in self._stopping_run_ids:
@@ -7732,7 +7832,12 @@ class APIServerAdapter(BasePlatformAdapter):
                         ephemeral_system_prompt=ephemeral_system_prompt,
                         session_id=session_id,
                         stream_delta_callback=_text_cb,
+                        reasoning_callback=_reasoning_cb,
+                        thinking_callback=_thinking_cb,
+                        status_callback=_status_cb,
                         tool_progress_callback=event_cb,
+                        tool_start_callback=_tool_start_cb,
+                        tool_complete_callback=_tool_complete_cb,
                         gateway_session_key=gateway_session_key,
                         requested_model=agent_overrides.get("requested_model"),
                         requested_provider=agent_overrides.get("requested_provider"),
@@ -7968,9 +8073,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     unregister_gateway_notify(approval_session_key)
                 except Exception:
                     pass
-                # Sentinel: signal SSE stream to close
+                # Close the callback transport before the sentinel so a
+                # provider callback arriving after run_conversation returns
+                # cannot append an unreachable event behind the sentinel.
+                transport_open = False
+                # Sentinel: signal SSE stream to close.
                 try:
-                    _put_event_if_active(None)
+                    if self._run_streams.get(run_id) is q:
+                        q.put_nowait(None)
                 except Exception:
                     pass
                 self._active_run_agents.pop(run_id, None)

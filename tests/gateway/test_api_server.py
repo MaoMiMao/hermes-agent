@@ -844,6 +844,35 @@ class TestModelsEndpoint:
             "refresh": True,
         }
 
+    @pytest.mark.asyncio
+    async def test_model_options_offline_uses_config_only_inventory(self, adapter, monkeypatch):
+        """Offline clients never invoke network-enriched picker inventory."""
+        from hermes_cli import inventory
+
+        ctx = object()
+        payload = {"providers": [], "model": "local-model", "provider": "local", "offline": True}
+        seen = {}
+        monkeypatch.setattr(inventory, "load_picker_context", lambda: ctx)
+
+        def fake_local(received_ctx):
+            seen["ctx"] = received_ctx
+            return payload
+
+        monkeypatch.setattr(inventory, "build_local_model_options_payload", fake_local)
+        monkeypatch.setattr(
+            inventory,
+            "build_model_options_payload",
+            lambda *_args, **_kwargs: pytest.fail("full model inventory must not run offline"),
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/model/options?offline=1")
+            assert resp.status == 200
+            assert await resp.json() == payload
+
+        assert seen["ctx"] is ctx
+
 
 # ---------------------------------------------------------------------------
 # /v1/capabilities endpoint
