@@ -125,6 +125,8 @@ def _(rid, params: dict) -> dict:
                     local_delivery_command(resolved, tmp),
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=600,
                 )
                 if proc.returncode != 0:
@@ -147,6 +149,8 @@ def _(rid, params: dict) -> dict:
                             local_delivery_command(resolved, tmp),
                             capture_output=True,
                             text=True,
+                            encoding="utf-8",
+                            errors="replace",
                             timeout=600,
                         )
         finally:
@@ -208,3 +212,7 @@ def _(rid, params: dict) -> dict:
 
 def register(server) -> None:
     _registry.install(server)
+    from . import methods_groups
+
+    methods_groups.register(server)
+    server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS
