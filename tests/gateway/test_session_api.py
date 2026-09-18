@@ -386,80 +386,37 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
 
 
 @pytest.mark.asyncio
-async def test_session_chat_stream_emits_reasoning_deltas_separately(adapter, session_db):
-    """Live reasoning must not be delayed until the final calibration event."""
+async def test_session_chat_stream_reports_interrupted_turn_as_not_completed(adapter, session_db):
+    """The SSE terminal payload is derived from the result, never hard-coded: an interrupted
+    turn streams ``completed: false`` / ``interrupted: true`` and ends with ``run.cancelled``,
+    and the run status matches (#111770)."""
     import json as _json
 
-    session_id = session_db.create_session("reasoning-stream-session", "api_server")
+    session_id = session_db.create_session("interrupted-session", "api_server")
 
-    async def fake_run(**kwargs):
-        kwargs["thinking_callback"]("(thinking face) analyzing...")
-        kwargs["status_callback"]("lifecycle", "Preparing context")
-        kwargs["reasoning_callback"]("check the source ")
-        kwargs["reasoning_callback"]("")
-        kwargs["reasoning_callback"]("before answering")
-        kwargs["stream_delta_callback"]("The answer.")
-        kwargs["tool_progress_callback"](
-            "reasoning.available",
-            "_thinking",
-            "check the source before answering",
-            None,
-        )
-        return (
-            {"final_response": "The answer.", "session_id": session_id},
-            {"total_tokens": 4},
-        )
+    async def fake_run(**_kwargs):
+        return {"final_response": "Operation interrupted.", "interrupted": True, "completed": False,
+                "session_id": session_id}, {"total_tokens": 1}
 
     app = _create_session_app(adapter)
     with patch.object(adapter, "_run_agent", side_effect=fake_run):
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post(
-                f"/api/sessions/{session_id}/chat/stream",
-                json={"message": "reason about this"},
-            )
-            assert resp.status == 200
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "hello"})
             body = await resp.text()
 
-    events = []
+    payloads = {}
     for block in body.split("\n\n"):
-        event_name = None
-        payload = None
-        for line in block.splitlines():
-            if line.startswith("event: "):
-                event_name = line[len("event: "):]
-            elif line.startswith("data: "):
-                payload = _json.loads(line[len("data: "):])
-        if event_name and payload is not None:
-            events.append((event_name, payload))
+        lines = block.splitlines()
+        event = next((ln[7:] for ln in lines if ln.startswith("event: ")), None)
+        data = next((ln[6:] for ln in lines if ln.startswith("data: ")), None)
+        if event and data:
+            payloads[event] = _json.loads(data)
 
-    names = [name for name, _ in events]
-    thinking = [payload for name, payload in events if name == "thinking.delta"]
-    statuses = [payload for name, payload in events if name == "status.update"]
-    reasoning = [payload for name, payload in events if name == "reasoning.delta"]
-    assert [event["text"] for event in thinking] == ["(thinking face) analyzing..."]
-    assert [(event["kind"], event["text"]) for event in statuses] == [
-        ("lifecycle", "Preparing context")
-    ]
-    assert statuses[0]["message_id"] == thinking[0]["message_id"]
-    assert [event["delta"] for event in reasoning] == [
-        "check the source ",
-        "before answering",
-    ]
-    assert all(event["message_id"] for event in reasoning)
-    assert len({event["message_id"] for event in reasoning}) == 1
-    assert names.index("thinking.delta") < names.index("reasoning.delta")
-    assert names.index("status.update") < names.index("reasoning.delta")
-    assert names.index("reasoning.delta") < names.index("assistant.delta")
-
-    # Preserve the existing complete reasoning snapshot as a calibration
-    # event after the incremental stream.
-    calibration = [payload for name, payload in events if name == "tool.progress"]
-    assert len(calibration) == 1
-    assert calibration[0]["message_id"] == reasoning[0]["message_id"]
-    assert calibration[0]["tool_name"] == "_thinking"
-    assert calibration[0]["delta"] == "check the source before answering"
-    assert names.index("reasoning.delta") < names.index("tool.progress")
-    assert names.index("tool.progress") < names.index("run.completed")
+    assert payloads["assistant.completed"]["completed"] is False
+    assert payloads["assistant.completed"]["interrupted"] is True
+    assert "run.cancelled" in payloads and "run.completed" not in payloads
+    assert payloads["run.cancelled"]["completed"] is False
+    assert next(iter(adapter._run_statuses.values()))["status"] == "cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +540,7 @@ def _patch_api_server_runtime(monkeypatch):
     monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
     monkeypatch.setattr(
         "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-        lambda provider: {
+        lambda provider, target_model=None: {
             "provider": provider,
             "api_key": f"sk-{provider}",
             "base_url": f"https://{provider}.example/v1",
@@ -1049,3 +1006,166 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
         assert resp.status == 400, await resp.text()
         assert (await resp.json())["error"]["code"] == "unsupported_session_field"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
+    adapter, session_db
+):
+    """A caller whose socket died must still be able to read what the agent said.
+
+    The session-stream route put the reply only on the SSE queue, so a client
+    that lost its connection saw the run reach "completed" with no way to learn
+    the text — indistinguishable from, and as useless as, a run that produced
+    nothing. POST /v1/runs has always recorded `output`; this pins the same for
+    this route, which is what makes GET /v1/runs/{run_id} a recovery path.
+    """
+    session_id = session_db.create_session("recover-stream-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            allow_finish.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("partial ")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "the answer worth keeping", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    with patch.object(
+        adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)
+    ), patch.object(
+        adapter, "_read_json_body", return_value=({"message": "stream please"}, None)
+    ), patch.object(
+        adapter, "_create_agent", side_effect=lambda **kw: FakeAgent(kw["stream_delta_callback"])
+    ), patch(
+        "gateway.platforms.api_server.web.StreamResponse",
+        return_value=DisconnectingStreamResponse(),
+    ):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        allow_finish.set()
+        await handler_task
+
+    record = adapter._run_statuses[run_id]
+    assert record["status"] == "completed"
+    # The whole point: the text survived the dead socket.
+    assert record.get("output") == "the answer worth keeping"
+
+    # And it is reachable through the documented read path, not just the dict.
+    get_request = MagicMock()
+    get_request.headers = {}
+    get_request.match_info = {"run_id": run_id}
+    response = await adapter._handle_get_run(get_request)
+    assert response.status == 200
+    assert "the answer worth keeping" in response.text
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_emits_reasoning_deltas_separately(adapter, session_db):
+    """Live reasoning must not be delayed until the final calibration event."""
+    import json as _json
+
+    session_id = session_db.create_session("reasoning-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["thinking_callback"]("(thinking face) analyzing...")
+        kwargs["status_callback"]("lifecycle", "Preparing context")
+        kwargs["reasoning_callback"]("check the source ")
+        kwargs["reasoning_callback"]("")
+        kwargs["reasoning_callback"]("before answering")
+        kwargs["stream_delta_callback"]("The answer.")
+        kwargs["tool_progress_callback"](
+            "reasoning.available",
+            "_thinking",
+            "check the source before answering",
+            None,
+        )
+        return (
+            {"final_response": "The answer.", "session_id": session_id},
+            {"total_tokens": 4},
+        )
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "reason about this"},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    events = []
+    for block in body.split("\n\n"):
+        event_name = None
+        payload = None
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event_name = line[len("event: "):]
+            elif line.startswith("data: "):
+                payload = _json.loads(line[len("data: "):])
+        if event_name and payload is not None:
+            events.append((event_name, payload))
+
+    names = [name for name, _ in events]
+    thinking = [payload for name, payload in events if name == "thinking.delta"]
+    statuses = [payload for name, payload in events if name == "status.update"]
+    reasoning = [payload for name, payload in events if name == "reasoning.delta"]
+    assert [event["text"] for event in thinking] == ["(thinking face) analyzing..."]
+    assert [(event["kind"], event["text"]) for event in statuses] == [
+        ("lifecycle", "Preparing context")
+    ]
+    assert statuses[0]["message_id"] == thinking[0]["message_id"]
+    assert [event["delta"] for event in reasoning] == [
+        "check the source ",
+        "before answering",
+    ]
+    assert all(event["message_id"] for event in reasoning)
+    assert len({event["message_id"] for event in reasoning}) == 1
+    assert names.index("thinking.delta") < names.index("reasoning.delta")
+    assert names.index("status.update") < names.index("reasoning.delta")
+    assert names.index("reasoning.delta") < names.index("assistant.delta")
+
+    # Preserve the existing complete reasoning snapshot as a calibration
+    # event after the incremental stream.
+    calibration = [payload for name, payload in events if name == "tool.progress"]
+    assert len(calibration) == 1
+    assert calibration[0]["message_id"] == reasoning[0]["message_id"]
+    assert calibration[0]["tool_name"] == "_thinking"
+    assert calibration[0]["delta"] == "check the source before answering"
+    assert names.index("reasoning.delta") < names.index("tool.progress")
+    assert names.index("tool.progress") < names.index("run.completed")
