@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>警务助手 · 登录</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#112a48;color:#d8e8f7;font:16px system-ui}p{padding:24px}</style>
+<p id="status" role="status">正在进入警务助手…</p>
+<script>
+(async () => {
+  const params = new URLSearchParams(location.search);
+  const email = params.get('email');
+  const username = params.get('username');
+  const token = params.get('token');
+  history.replaceState(null, '', location.pathname);
+  try {
+    if (!email || !username || !token) {
+      throw new Error('登录链接缺少 email、username 或 token');
+    }
+    const response = await fetch('/api/v1/auths/embed/login', {
+      method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email, username, token})
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : '登录参数不正确');
+    if (!result.token) throw new Error('未收到登录凭据');
+    localStorage.setItem('token', result.token);
+    location.replace('/');
+  } catch(error) {
+    document.getElementById('status').textContent = '进入失败：' + error.message + '。请重新打开业务系统中的助手链接。';
+  }
+})();
+</script>
+</html>

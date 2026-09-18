@@ -14,6 +14,7 @@ act/
 .vscode/
 .env
 .op.env
+openwebui.env
 .env.local
 .env.development.local
 .env.test.local

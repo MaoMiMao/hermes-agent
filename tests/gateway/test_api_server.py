@@ -1163,6 +1163,30 @@ class TestChatCompletionsEndpoint:
 
 
     @pytest.mark.asyncio
+    async def test_chat_stream_separates_reasoning_from_answer(self, adapter):
+        async def run(**kwargs):
+            kwargs["reasoning_callback"]("分析线索")
+            kwargs["stream_delta_callback"]("处理结果")
+            kwargs["reasoning_callback"]("补充分析")
+            return {"final_response": "处理结果"}, {}
+
+        async with TestClient(TestServer(_create_app(adapter))) as client:
+            with patch.object(adapter, "_run_agent", side_effect=run):
+                response = await client.post("/v1/chat/completions", json={
+                    "model": "test", "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                })
+                body = await response.text()
+        chunks = [json.loads(line[6:]) for line in body.splitlines()
+                  if line.startswith("data: ") and line != "data: [DONE]"]
+        deltas = [chunk["choices"][0]["delta"] for chunk in chunks]
+        assert [d for d in deltas if "reasoning_content" in d or "content" in d] == [
+            {"reasoning_content": "分析线索"}, {"content": "处理结果"},
+            {"reasoning_content": "补充分析"},
+        ]
+        assert body.rstrip().endswith("data: [DONE]")
+
+    @pytest.mark.asyncio
     async def test_session_chat_stream_passes_request_model_provider_options(self, adapter):
         app = _create_app(adapter)
         model_options = {"reasoning_effort": "medium", "service_tier": "priority"}

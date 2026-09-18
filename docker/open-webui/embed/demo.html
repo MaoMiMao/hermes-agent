@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>外部 Token iframe 验证</title>
+<style>body{margin:0;height:100vh;display:flex;flex-direction:column;background:#112a48;color:#eaf3fc;font:14px system-ui}form{padding:16px;display:flex;gap:12px;flex-wrap:wrap}input,button{padding:8px;border:0;border-radius:6px}iframe{flex:1;width:100%;border:0}button{background:#32c5ff;cursor:pointer}</style>
+<form id="connect"><label>地址 <input id="base" type="url" value="http://localhost:3000" required></label><label>邮箱 <input id="email" type="email" value="iframe-test@example.com" required></label><label>姓名 <input id="username" value="验证用户" required></label><label>系统 Token <input id="token" type="password" autocomplete="off" required></label><button>进入助手</button></form>
+<iframe id="assistant" title="警务助手" referrerpolicy="no-referrer"></iframe>
+<script>
+document.getElementById('connect').addEventListener('submit', event => {
+ event.preventDefault();
+ const url = new URL('/api/v1/auths/embed', document.getElementById('base').value);
+ for (const key of ['email','username','token']) url.searchParams.set(key, document.getElementById(key).value);
+ document.getElementById('assistant').src = url.toString();
+});
+</script></html>

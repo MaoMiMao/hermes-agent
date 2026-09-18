@@ -1,0 +1,124 @@
+# Run explicitly with -f: this repository also has a separate docker-compose.yml.
+# docker-compose -p hermes-openwebui --env-file openwebui.env -f docker-compose.yaml up -d
+version: "3.8"
+
+services:
+  hermes-agent:
+    image: ${HERMES_IMAGE:-ds-hermes-agent:20260914}
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    environment:
+      HERMES_UID: ${HERMES_UID:-10000}
+      HERMES_GID: ${HERMES_GID:-10000}
+      HERMES_HOME: /opt/data
+      HERMES_DASHBOARD: "1"
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: "8642"
+      API_SERVER_MODEL_NAME: "警务助手"
+      API_SERVER_KEY: ${API_SERVER_KEY:-90b817a4838c829d4922588d1b85dec1094a716eaf92f4e87da8e44164013baa}
+      HERMES_DISABLE_LAZY_INSTALLS: "1"
+      UV_OFFLINE: "1"
+      PIP_NO_INDEX: "1"
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: UTF-8
+      HERMES_WEB_UI_MANAGED_GATEWAY: 1
+      HERMES_WEB_UI_AUTH_JWT_EXPIRES_IN: ${HERMES_WEB_UI_AUTH_JWT_EXPIRES_IN:-30d}
+      HERMES_DASHBOARD_HOST: 0.0.0.0
+      HERMES_DASHBOARD_PORT: "6060"
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-admin}
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-Edmund@110}
+      PATH: /opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      HERMES_ALLOW_ROOT_GATEWAY: 1
+      HERMES_SKIP_NODE_BOOTSTRAP: 1
+      PIP_DISABLE_PIP_VERSION_CHECK: 1
+      npm_config_offline: "true"
+      npm_config_audit: "false"
+      npm_config_fund: "false"
+      npm_config_update_notifier: "false"
+      HF_HUB_OFFLINE: 1
+      TRANSFORMERS_OFFLINE: 1
+      HF_DATASETS_OFFLINE: 1
+      HF_HUB_DISABLE_TELEMETRY: 1
+      WANDB_DISABLED: "true"
+      WANDB_MODE: offline
+      DO_NOT_TRACK: 1
+      AWS_EC2_METADATA_DISABLED: "true"
+      NO_PROXY: localhost,127.0.0.1,1,host.docker.internal,hermes-webui
+      HERMES_API_TIMEOUT: 180
+      HERMES_API_CALL_STALE_TIMEOUT: 120
+      HERMES_STREAM_READ_TIMEOUT: 60
+      HERMES_STREAM_STALE_TIMEOUT: 120
+      TERMINAL_TIMEOUT: 120
+    volumes:
+      # Keep the existing Hermes state from docker-compose.yml.
+      - ${HERMES_DATA_DIR:-/opt/ds-hermes/data/hermes}:/opt/data
+      - ${HERMES_WORKSPACE_DIR:-/opt/ds-hermes/data/hermes/workspace}:/opt/workspace
+    working_dir: /opt/data
+    expose:
+      - "8642"
+    ports:
+      - "${HERMES_DASHBOARD_BIND:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-6060}:6060"
+    healthcheck:
+      test: ["CMD", "/opt/hermes/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=5).read()"]
+      interval: 15s
+      timeout: 10s
+      start_period: 60s
+      retries: 10
+
+  open-webui:
+    build:
+      context: ${OPEN_WEBUI_SOURCE_DIR:-../open-webui}
+      dockerfile: Dockerfile
+      args:
+        USE_CUDA: "false"
+        USE_OLLAMA: "false"
+        USE_SLIM: "true"
+        NPM_REGISTRY: ${OPEN_WEBUI_NPM_REGISTRY:-https://registry.npmmirror.com}
+        BUILD_HASH: ${OPEN_WEBUI_BUILD_HASH:-local-20260914}
+    image: ${OPEN_WEBUI_IMAGE:-ds-open-webui:20260914}
+    restart: unless-stopped
+    depends_on:
+      hermes-agent:
+        condition: service_healthy
+    ports:
+      - "${OPEN_WEBUI_BIND:-127.0.0.1}:${OPEN_WEBUI_PORT:-3000}:8080"
+    environment:
+      OPENAI_API_BASE_URL: http://hermes-agent:8642/v1
+      OPENAI_API_KEY: ${API_SERVER_KEY:-90b817a4838c829d4922588d1b85dec1094a716eaf92f4e87da8e44164013baa}
+      ENABLE_OPENAI_API: "true"
+      WEBUI_NAME: "警务助手"
+      DEFAULT_LOCALE: "zh-CN"
+      ENABLE_OLLAMA_API: "false"
+      OFFLINE_MODE: "true"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      ENABLE_VERSION_UPDATE_CHECK: "false"
+      RAG_EMBEDDING_MODEL_AUTO_UPDATE: "false"
+      RAG_RERANKING_MODEL_AUTO_UPDATE: "false"
+      WHISPER_MODEL_AUTO_UPDATE: "false"
+      RAG_EMBEDDING_MODEL: ""
+      AUXILIARY_EMBEDDING_MODEL: ""
+      WEBUI_AUTH: "true"
+      WEBUI_EMBED_ALLOWED_ORIGINS: ${WEBUI_EMBED_ALLOWED_ORIGINS:-*}
+      WEBUI_EMBED_AUTO_CREATE: ${WEBUI_EMBED_AUTO_CREATE:-true}
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:-90b817a4838c829d4922588d1b85dec1094a716eaf92f4e87da8e44164013baa}
+    volumes:
+      - open-webui-data:/app/backend/data
+      - ./docker/open-webui/police-dark.css:/app/backend/open_webui/static/custom.css:ro
+      - ./docker/open-webui/branding/favicon.svg:/app/backend/open_webui/static/favicon.svg:ro
+      - ./docker/open-webui/branding/favicon.png:/app/backend/open_webui/static/favicon.png:ro
+      - ./docker/open-webui/branding/favicon.ico:/app/backend/open_webui/static/favicon.ico:ro
+      - ./docker/open-webui/branding/favicon-96x96.png:/app/backend/open_webui/static/favicon-96x96.png:ro
+      - ./docker/open-webui/branding/apple-touch-icon.png:/app/backend/open_webui/static/apple-touch-icon.png:ro
+      - ./docker/open-webui/branding/logo.png:/app/backend/open_webui/static/logo.png:ro
+      - ./docker/open-webui/branding/splash.png:/app/backend/open_webui/static/splash.png:ro
+      - ./docker/open-webui/branding/splash-dark.png:/app/backend/open_webui/static/splash-dark.png:ro
+      - ./docker/open-webui/branding/web-app-manifest-192x192.png:/app/backend/open_webui/static/web-app-manifest-192x192.png:ro
+      - ./docker/open-webui/branding/web-app-manifest-512x512.png:/app/backend/open_webui/static/web-app-manifest-512x512.png:ro
+      - ./docker/open-webui/branding/favicon.png:/app/build/favicon.png:ro
+volumes:
+  open-webui-data:

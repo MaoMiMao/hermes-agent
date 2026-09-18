@@ -275,19 +275,37 @@ RUN cd plugins/platforms/photon/sidecar && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra google-chat
+# Use Debian's interpreter explicitly: the uv_source stage supplies uv, not Python.
+# The offline native wheels must target this same Python minor version.
+RUN uv sync --python /usr/bin/python3.13 --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra google-chat
 
 # MarkItDown and its OCR plugin are supplied from an offline wheelhouse. The
 # wheelhouse is a named BuildKit context so it stays outside both the source
 # tree and the final image. It must contain Python 3.13 wheels for the target
 # architecture, including the complete dependency closure.
+# Select every named converter extra: 0.1.7's "all" additionally pins
+# youtube-transcript-api~=1.0.0, conflicting with Hermes' 1.2.4. The official
+# youtube-transcription extra supports Hermes' version without that pin.
 RUN --mount=type=bind,from=markitdown_wheels,target=/opt/markitdown-wheels,readonly \
+    uv pip freeze --exclude-editable --python /opt/hermes/.venv/bin/python > /tmp/hermes-build-constraints.txt && \
     uv pip install \
         --python /opt/hermes/.venv/bin/python \
+        --constraint /tmp/hermes-build-constraints.txt \
         --no-index \
         --find-links=/opt/markitdown-wheels \
-        "markitdown[all]==0.1.7" \
-        "markitdown-ocr==0.1.0"
+        "markitdown[audio-transcription,az-content-understanding,az-doc-intel,docx,outlook,pdf,pptx,xls,xlsx,youtube-transcription]==0.1.7" \
+        "markitdown-ocr==0.1.0" && \
+    rm /tmp/hermes-build-constraints.txt
+
+# Keep the CLI's MCP SDK dependencies separate from Hermes and the OCR plugins.
+# Install at build time so offline containers can call MCP services directly.
+RUN uv venv --python /usr/bin/python3.13 /opt/mcp2cli && \
+    uv pip install --python /opt/mcp2cli/bin/python "mcp2cli==3.7.0" && \
+    uv pip check --python /opt/mcp2cli/bin/python && \
+    ln -s /opt/mcp2cli/bin/mcp2cli /usr/local/bin/mcp2cli && \
+    chmod -R a+rX,go-w /opt/mcp2cli && \
+    /usr/local/bin/mcp2cli --version && \
+    /usr/local/bin/mcp2cli --help > /dev/null
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
@@ -312,7 +330,43 @@ COPY --link --chmod=a+rX,go-w . .
 # Link hermes-agent itself (editable). Deps are already installed in the
 # cached layer above; `--no-deps` makes this a fast egg-link creation with no
 # resolution or downloads.
-RUN uv pip install --no-cache-dir --no-deps -e "."
+# Keep the image's project hint consistent with its preinstalled environment.
+# The source checkout's .python-version is for development and may select 3.11.
+RUN printf '3.13\n' > /opt/hermes/.python-version && \
+    uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir --no-deps -e "."
+
+# Exercise the final environment without a model request or runtime downloads.
+# Loading OCR entry points catches missing native libraries as well as packages.
+# A global `uv pip check` does not honor pyproject's security overrides (notably
+# cryptography>=50 versus MSAL's <49 metadata). Preserve the locked dependencies
+# with the install constraints above and exercise the document runtime here.
+RUN /opt/hermes/.venv/bin/python - <<'PY'
+import io
+import sys
+from importlib.metadata import distribution
+
+import pymupdf
+from markitdown import MarkItDown
+from openai import OpenAI
+
+assert sys.version_info[:2] == (3, 13), sys.version
+assert sys.prefix == "/opt/hermes/.venv", sys.prefix
+ocr = distribution("markitdown-ocr")
+assert ocr.entry_points, "markitdown-ocr has no plugin entry points"
+for entry in ocr.entry_points:
+    entry.load()
+converter = MarkItDown(
+    enable_plugins=True,
+    llm_client=OpenAI(api_key="build-check-only", base_url="http://127.0.0.1:1/v1"),
+    llm_model="build-check-only",
+)
+result = converter.convert_stream(
+    io.BytesIO(b"<html><body><p>hermes document check</p></body></html>"),
+    file_extension=".html",
+)
+assert "hermes document check" in result.text_content, result.text_content
+print(f"Document runtime OK: {sys.executable}; OCR {ocr.version}")
+PY
 
 # Wire the exec shim and install-method stamp.  Files under /opt/hermes are
 # already root-owned (COPY, uv sync, npm install all run as root) and

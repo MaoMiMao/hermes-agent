@@ -1,0 +1,180 @@
+/* Production palette adapted from var.css and antd-dark.less.
+ * Open WebUI loads /static/custom.css; activate with Settings > General > Dark.
+ * Keep light/OLED themes independent and require no external assets.
+ */
+html.dark:not(.oled-dark) {
+  color-scheme: dark;
+  --police-accent: #32c5ff;
+  --police-border: #435b7c;
+  --police-panel: linear-gradient(127deg, #243d60 0%, #112a48 100%);
+  --color-gray-50: #f4f9ff;
+  --color-gray-100: #eaf3fc;
+  --color-gray-200: #d8e8f7;
+  --color-gray-300: #c0d5e9;
+  --color-gray-400: #a5bdd6;
+  --color-gray-500: #839db9;
+  --color-gray-600: #5e7897;
+  --color-gray-700: #435b7c;
+  --color-gray-800: #243d60;
+  --color-gray-850: #193453;
+  --color-gray-900: #112a48;
+  --color-gray-950: #0b2038;
+  --color-blue-300: #b0e0ff;
+  --color-blue-400: #66b3f9;
+  --color-blue-500: #1689c2;
+  --color-blue-600: #126eab;
+  --color-blue-700: #105a8d;
+}
+
+html.dark:not(.oled-dark) body {
+  background: #112a48;
+  color: #eaf3fc;
+}
+
+html.dark:not(.oled-dark) #send-message-button:not(:disabled):not(.disabled) {
+  background: var(--police-accent);
+  color: #0b2038;
+}
+
+html.dark:not(.oled-dark) #send-message-button:not(:disabled):not(.disabled):hover {
+  background: #b0e0ff;
+}
+
+html.dark:not(.oled-dark) [role='dialog'] {
+  border-color: var(--police-border);
+}
+
+html.dark:not(.oled-dark) .markdown-prose {
+  --tw-prose-invert-body: #d8e8f7;
+  --tw-prose-invert-headings: #eaf3fc;
+  --tw-prose-invert-links: #32c5ff;
+  --tw-prose-invert-bold: #eaf3fc;
+  --tw-prose-invert-quotes: #c0d5e9;
+  --tw-prose-invert-code: #b0e0ff;
+  --tw-prose-invert-th-borders: #435b7c;
+  --tw-prose-invert-td-borders: #243d60;
+}
+
+html.dark:not(.oled-dark) .markdown-prose a {
+  color: var(--police-accent);
+}
+
+html.dark:not(.oled-dark) .markdown-prose a:hover {
+  color: #b0e0ff;
+}
+
+html.dark:not(.oled-dark) :where(button, a, input, textarea, select, [contenteditable='true']):focus-visible {
+  outline: 2px solid var(--police-accent);
+  outline-offset: 3px;
+}
+
+html.dark:not(.oled-dark) ::selection {
+  background: #32c5ff;
+  color: #0b2038;
+}
+
+/* Target the chat surface explicitly: older built images retain literal gray backgrounds. */
+html.dark:not(.oled-dark) #chat-container {
+  background-color: #0d233c;
+  background-image:
+    radial-gradient(ellipse at 52% 36%, rgb(50 197 255 / 15%), transparent 58%),
+    radial-gradient(ellipse at 90% 85%, rgb(102 179 249 / 9%), transparent 50%),
+    linear-gradient(rgb(176 224 255 / 2%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(176 224 255 / 2%) 1px, transparent 1px),
+    linear-gradient(145deg, #112a48, #0b2038);
+  background-size: auto, auto, 48px 48px, 48px 48px, auto;
+}
+
+html.dark:not(.oled-dark) #sidebar {
+  background: linear-gradient(165deg, rgb(20 47 78 / 65%), rgb(11 32 56 / 50%) 75%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  backdrop-filter: blur(18px) saturate(120%);
+  border-inline-end: 1px solid rgb(176 224 255 / 9%);
+  box-shadow: 8px 0 32px rgb(0 12 30 / 12%);
+}
+
+html.dark:not(.oled-dark) #sidebar-webui-name {
+  color: #eaf3fc;
+  font-weight: 600;
+  letter-spacing: .06em;
+}
+
+html.dark:not(.oled-dark) #sidebar-new-chat-button {
+  background: linear-gradient(110deg, rgb(50 197 255 / 13%), rgb(36 61 96 / 60%));
+  border: 1px solid rgb(50 197 255 / 25%);
+  box-shadow: inset 0 1px 0 rgb(176 224 255 / 6%);
+}
+
+html.dark:not(.oled-dark) #sidebar :is(a, button):hover {
+  color: #eaf3fc;
+}
+
+html.dark:not(.oled-dark) #message-input-container {
+  background: linear-gradient(125deg, rgb(96 155 199 / 20%), rgb(20 45 73 / 32%) 80%);
+  -webkit-backdrop-filter: blur(14px) saturate(125%);
+  backdrop-filter: blur(14px) saturate(125%);
+  border: 1px solid transparent;
+  border-radius: 16px;
+  box-shadow: inset 0 1px 0 rgb(176 224 255 / 14%), 0 8px 28px rgb(0 12 30 / 12%);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+html.dark:not(.oled-dark) #message-input-container:focus-within {
+  border-color: rgb(102 179 249 / 35%);
+  box-shadow: inset 0 1px 0 rgb(176 224 255 / 18%), 0 8px 32px rgb(50 197 255 / 6%);
+}
+
+/* The enclosing input panel supplies the focus indicator, avoiding a second rectangle. */
+html.dark:not(.oled-dark) #message-input-container :is(textarea, [contenteditable='true']):focus-visible {
+  outline: none;
+}
+
+html.dark:not(.oled-dark) #send-message-button:not(:disabled):not(.disabled) {
+  background: linear-gradient(145deg, #72daff, #32c5ff);
+  box-shadow: 0 3px 14px rgb(50 197 255 / 22%);
+}
+
+html.dark:not(.oled-dark) #chat-container [role='list']:has(> button.waterfall) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: 10px;
+  padding: 4px 1px;
+  max-height: none;
+  overflow: visible;
+}
+
+/* Suggestions ships inside a fixed h-36 wrapper; let all grid rows participate in layout. */
+html.dark:not(.oled-dark) #chat-container div:has(> [role='list'] > button.waterfall) {
+  height: auto;
+  max-height: none;
+  overflow: visible;
+}
+
+html.dark:not(.oled-dark) #chat-container button.waterfall[role='listitem'] {
+  min-height: 0;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(120deg, rgb(96 155 199 / 12%), rgb(17 42 72 / 18%));
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 0 rgb(176 224 255 / 8%);
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+html.dark:not(.oled-dark) #chat-container button.waterfall[role='listitem']:hover {
+  background: linear-gradient(120deg, rgb(102 179 249 / 22%), rgb(36 61 96 / 32%));
+}
+
+html.dark:not(.oled-dark) :is([role='dialog'], [role='menu']) {
+  background-color: #142d49;
+  border: 1px solid rgb(67 91 124 / 80%);
+  box-shadow: 0 20px 64px rgb(0 12 30 / 35%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.dark:not(.oled-dark) #message-input-container,
+  html.dark:not(.oled-dark) #chat-container button.waterfall[role='listitem'] {
+    transition: none;
+  }
+}

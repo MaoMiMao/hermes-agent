@@ -40,6 +40,7 @@ ui-tui/packages/hermes-ink/dist/
 # Environment files
 .env
 .env.*
+openwebui.env
 # ...but keep the template: docker/stage2-hook.sh seeds $HERMES_HOME/.env from
 # /opt/hermes/.env.example on first boot (OOF-285 — excluding it silently broke
 # first-boot .env seeding and the API_SERVER_KEY generation that depends on it).
@@ -106,9 +107,9 @@ plans/
 .hadolint.yaml
 .mailmap
 
-# Debug/export artifacts — must never reach image layers (COPY . .)
+# Repo-root debug/export artifacts — must never reach image layers (COPY . .)
 /log.txt
 /sqlite_leak_fix.png
 /*.png.bak
-*.tar.gz
-*.tgz
+/default.tar.gz
+/*.tar.gz
